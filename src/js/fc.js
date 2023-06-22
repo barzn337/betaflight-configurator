@@ -23,8 +23,8 @@ const INITIAL_CONFIG = {
     craftName:                        '',
     displayName:                      '', // present for backwards compatibility before MSP v1.45
     pilotName:                        '',
-    pidProfileNames:                  ["", "", "", ""],
-    rateProfileNames:                 ["", "", "", ""],
+    pidProfileNames:                  ["", "", ""],
+    rateProfileNames:                 ["", "", "", "", "", ""],
     numProfiles:                      3,
     rateProfile:                      0,
     boardType:                        0,
