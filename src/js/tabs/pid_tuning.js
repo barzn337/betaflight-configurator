@@ -1391,11 +1391,7 @@ pid_tuning.initialize = function (callback) {
         }
 
         function loadRateProfilesList() {
-            let numberOfRateProfiles = 6;
-
-            if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_45)) {
-                numberOfRateProfiles = 4;
-            }
+            const numberOfRateProfiles = 6;
 
             const rateProfileElements = [];
             for (let i = 0; i < numberOfRateProfiles; i++) {
