@@ -5,10 +5,14 @@ import { have_sensor } from "../sensor_helpers";
 import FC from "../fc";
 import MSP from "../msp";
 import MSPCodes from "../msp/MSPCodes";
-import serial from "../serial";
 import * as d3 from 'd3';
+import $ from 'jquery';
+import semver from 'semver';
+import { API_VERSION_1_46 } from "../data_storage";
+import DEBUG from "../debug";
 
 const sensors = {};
+
 sensors.initialize = function (callback) {
 
     if (GUI.active_tab != 'sensors') {
@@ -22,6 +26,9 @@ sensors.initialize = function (callback) {
             FC.SENSOR_DATA.magnetometer[i] = 0;
             FC.SENSOR_DATA.sonar = 0;
             FC.SENSOR_DATA.altitude = 0;
+        }
+
+        for (let i = 0; i < sensors.debugColumns; i++) {
             FC.SENSOR_DATA.debug[i] = 0;
         }
     }
@@ -183,6 +190,22 @@ sensors.initialize = function (callback) {
         }
     }
 
+    function displayDebugColumnNames() {
+        const debugModeName = DEBUG.modes[FC.PID_ADVANCED_CONFIG.debugMode];
+        const debugFields = DEBUG.fieldNames[debugModeName];
+
+        for (let i = 0; i < sensors.debugColumns; i++) {
+            let msg = `Debug ${i} unknown`;
+            if (debugFields) {
+                msg = debugFields[`debug[${i}]`] ?? `Debug ${i} not used`;
+            }
+
+            $(`.plot_control.debug${i}`)
+            .children('.title')
+            .text(msg);
+        }
+    }
+
     $('#content').load("./tabs/sensors.html", function load_html() {
         // translate to user-selected language
         i18n.localizePage();
@@ -246,6 +269,19 @@ sensors.initialize = function (callback) {
             setConfig({'graphs_enabled': _checkboxes});
         });
 
+        if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_46)) {
+            sensors.debugColumns = 8;
+
+            MSP.send_message(MSPCodes.MSP_ADVANCED_CONFIG, false, false, displayDebugColumnNames);
+        } else {
+            sensors.debugColumns = 4;
+
+            for (let i = 4; i < 8; i++) {
+                $(`svg#debug${i}`).hide();
+                $(`div.plot_control.debug${i}`).hide();
+            }
+        }
+
         // Always start with default/empty sensor data array, clean slate all
         initSensorData();
 
@@ -261,24 +297,22 @@ sensors.initialize = function (callback) {
             mag_data = initDataArray(3),
             altitude_data = initDataArray(1),
             sonar_data = initDataArray(1),
-            debug_data = [
-            initDataArray(1),
-            initDataArray(1),
-            initDataArray(1),
-            initDataArray(1),
-        ];
+            debug_data = [];
+
+        for (let i = 0; i < sensors.debugColumns; i++) {
+            debug_data.push(initDataArray(1));
+        }
 
         let gyroHelpers = initGraphHelpers('#gyro', samples_gyro_i, [-2000, 2000]);
         let accelHelpers = initGraphHelpers('#accel', samples_accel_i, [-2, 2]);
         let magHelpers = initGraphHelpers('#mag', samples_mag_i, [-1, 1]);
         const altitudeHelpers = initGraphHelpers('#altitude', samples_altitude_i);
         const sonarHelpers = initGraphHelpers('#sonar', samples_sonar_i);
-        const debugHelpers = [
-            initGraphHelpers('#debug1', samples_debug_i),
-            initGraphHelpers('#debug2', samples_debug_i),
-            initGraphHelpers('#debug3', samples_debug_i),
-            initGraphHelpers('#debug4', samples_debug_i),
-        ];
+        const debugHelpers = [];
+
+        for (let i = 0; i < sensors.debugColumns; i++) {
+            debugHelpers.push(initGraphHelpers(`#debug${i}`, samples_debug_i));
+        }
 
         const raw_data_text_ements = {
             x: [],
@@ -311,14 +345,25 @@ sensors.initialize = function (callback) {
             const scales = {
                 'gyro':  parseFloat($('.tab-sensors select[name="gyro_scale"]').val()),
                 'accel': parseFloat($('.tab-sensors select[name="accel_scale"]').val()),
-                'mag':   parseFloat($('.tab-sensors select[name="mag_scale"]').val()),
+                'mag':   parseInt($('.tab-sensors select[name="mag_scale"]').val(), 10),
             };
 
             // handling of "data pulling" is a little bit funky here, as MSP_RAW_IMU contains values for gyro/accel/mag but not altitude
             // this means that setting a slower refresh rate on any of the attributes would have no effect
             // what we will do instead is = determinate the fastest refresh rate for those 3 attributes, use that as a "polling rate"
             // and use the "slower" refresh rates only for re-drawing the graphs (to save resources/computing power)
-            const fastest = d3.min([rates.gyro, rates.accel, rates.mag]);
+
+            let fastest;
+            // if any of the refresh rates change, we need to re-determine the fastest refresh rate
+            if (['gyro_refresh_rate', 'accel_refresh_rate', 'mag_refresh_rate'].includes($(this).attr('name'))) {
+                fastest = $(this).val();
+
+                $('.tab-sensors select[name="gyro_refresh_rate"]').val(fastest);
+                $('.tab-sensors select[name="accel_refresh_rate"]').val(fastest);
+                $('.tab-sensors select[name="mag_refresh_rate"]').val(fastest);
+            } else {
+                fastest = d3.max([rates.gyro, rates.accel, rates.mag]);
+            }
 
             // store current/latest refresh rates in the storage
             setConfig({'sensor_settings': {'rates': rates, 'scales': scales}});
@@ -394,9 +439,9 @@ sensors.initialize = function (callback) {
 
                     samples_mag_i = addSampleToData(mag_data, samples_mag_i, FC.SENSOR_DATA.magnetometer);
                     drawGraph(magHelpers, mag_data, samples_mag_i);
-                    raw_data_text_ements.x[2].text(FC.SENSOR_DATA.magnetometer[0].toFixed(2));
-                    raw_data_text_ements.y[2].text(FC.SENSOR_DATA.magnetometer[1].toFixed(2));
-                    raw_data_text_ements.z[2].text(FC.SENSOR_DATA.magnetometer[2].toFixed(2));
+                    raw_data_text_ements.x[2].text(FC.SENSOR_DATA.magnetometer[0].toFixed(0));
+                    raw_data_text_ements.y[2].text(FC.SENSOR_DATA.magnetometer[1].toFixed(0));
+                    raw_data_text_ements.z[2].text(FC.SENSOR_DATA.magnetometer[2].toFixed(0));
                 }
             }
 
@@ -417,9 +462,8 @@ sensors.initialize = function (callback) {
             }
 
             function update_debug_graphs() {
-                for (let i = 0; i < 4; i++) {
+                for (let i = 0; i < sensors.debugColumns; i++) {
                     updateGraphHelperSize(debugHelpers[i]);
-
                     addSampleToData(debug_data[i], samples_debug_i, [FC.SENSOR_DATA.debug[i]]);
                     drawGraph(debugHelpers[i], debug_data[i], samples_debug_i);
                     raw_data_text_ements.x[5 + i].text(FC.SENSOR_DATA.debug[i]);
@@ -472,8 +516,6 @@ sensors.initialize = function (callback) {
 };
 
 sensors.cleanup = function (callback) {
-    serial.emptyOutputBuffer();
-
     if (callback) callback();
 };
 

@@ -1,11 +1,11 @@
 ## This is triggered by the publishing of a release, and will build the assets and attach them.
 
-name: On Release 
+name: On Release
 
 on:
   release:
     types: [published]
-        
+
 jobs:
   ci:
     name: CI
@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Code Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Fetch build artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: List assets
         run: ls -al Betaflight-*/*
@@ -30,12 +30,12 @@ jobs:
       - name: Attach assets to release
         run: |
           set -x
-          assets=()
+          ASSETS=()
           for asset in Betaflight-*/*; do
-            assets+=("-a" "$asset")
+            ASSETS+=("$asset")
             echo "$asset"
           done
-          tag_name="${GITHUB_REF##*/}"
-          hub release edit "${assets[@]}" -m "" "$tag_name"
+          TAG_NAME="${GITHUB_REF##*/}"
+          gh release upload "${TAG_NAME}" "${ASSETS[@]}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

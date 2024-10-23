@@ -1,15 +1,22 @@
 import GUI from "./gui.js";
 import CONFIGURATOR from "./data_storage.js";
-import serial from "./serial.js";
+import { serialShim } from "./serial_shim.js";
+
+let serial = serialShim();
 
 const MSP = {
     symbols: {
-        BEGIN: '$'.charCodeAt(0),
-        PROTO_V1: 'M'.charCodeAt(0),
-        PROTO_V2: 'X'.charCodeAt(0),
-        FROM_MWC: '>'.charCodeAt(0),
-        TO_MWC: '<'.charCodeAt(0),
-        UNSUPPORTED: '!'.charCodeAt(0),
+        BEGIN:               '$'.charCodeAt(0),
+        PROTO_V1:            'M'.charCodeAt(0),
+        PROTO_V2:            'X'.charCodeAt(0),
+        FROM_MWC:            '>'.charCodeAt(0),
+        TO_MWC:              '<'.charCodeAt(0),
+        UNSUPPORTED:         '!'.charCodeAt(0),
+        START_OF_TEXT:       0x02,
+        END_OF_TEXT:         0x03,
+        END_OF_TRANSMISSION: 0x04,
+        LINE_FEED:           0x0A,
+        CARRIAGE_RETURN:     0x0D,
     },
     constants: {
         PROTOCOL_V1:                1,
@@ -35,6 +42,7 @@ const MSP = {
         PAYLOAD_V2:                 15,
         CHECKSUM_V1:                16,
         CHECKSUM_V2:                17,
+        CLI_COMMAND:                18,
     },
     state:                      0,
     message_direction:          1,
@@ -52,7 +60,7 @@ const MSP = {
     packet_error:               0,
     unsupported:                0,
 
-    MIN_TIMEOUT:                50,
+    MIN_TIMEOUT:                200,
     MAX_TIMEOUT:                2000,
     timeout:                    200,
 
@@ -61,18 +69,50 @@ const MSP = {
 
     JUMBO_FRAME_SIZE_LIMIT:     255,
 
-    read: function (readInfo) {
+    cli_buffer:                 [], // buffer for CLI charactor output
+    cli_output:                 [],
+    cli_callback:               null,
+
+    read(readInfo) {
         if (CONFIGURATOR.virtualMode) {
             return;
         }
 
-        const data = new Uint8Array(readInfo.data);
+        const data = new Uint8Array(readInfo.data ?? readInfo);
 
         for (const chunk of data) {
             switch (this.state) {
+            case this.decoder_states.CLI_COMMAND:
+                switch (chunk) {
+                    case this.symbols.END_OF_TEXT:
+                        this.cli_output.push(this.cli_buffer.join(''));
+                        this.cli_buffer.length = 0;
+                        if (this.cli_callback) {
+                            this.cli_callback(this.cli_output);
+                            this.cli_output.length = 0;
+                        }
+                        this.state = this.decoder_states.IDLE;
+                        break;
+                    case this.symbols.LINE_FEED:
+                        this.cli_output.push(this.cli_buffer.join(''));
+                        this.cli_buffer.length = 0;
+                        break;
+                    case this.symbols.CARRIAGE_RETURN:
+                        // ignore CRs
+                        break;
+                    default:
+                        this.cli_buffer.push(String.fromCharCode(chunk));
+                        break;
+                }
+                break;
             case this.decoder_states.IDLE: // sync char 1
-                if (chunk === this.symbols.BEGIN) {
-                    this.state = this.decoder_states.PROTO_IDENTIFIER;
+                switch (chunk) {
+                    case this.symbols.BEGIN:
+                        this.state = this.decoder_states.PROTO_IDENTIFIER;
+                        break;
+                    case this.symbols.START_OF_TEXT:
+                        this.state = this.decoder_states.CLI_COMMAND;
+                        break;
                 }
                 break;
             case this.decoder_states.PROTO_IDENTIFIER: // sync char 2
@@ -209,11 +249,11 @@ const MSP = {
         }
         this.last_received_timestamp = Date.now();
     },
-    _initialize_read_buffer: function() {
+    _initialize_read_buffer() {
         this.message_buffer = new ArrayBuffer(this.message_length_expected);
         this.message_buffer_uint8_view = new Uint8Array(this.message_buffer);
     },
-    _dispatch_message: function(expectedChecksum) {
+    _dispatch_message(expectedChecksum) {
         if (this.message_checksum === expectedChecksum) {
             // message received, store dataview
             this.dataView = new DataView(this.message_buffer, 0, this.message_length_expected);
@@ -229,21 +269,20 @@ const MSP = {
         this.messageIsJumboFrame = false;
         this.crcError = false;
     },
-    notify: function() {
-        const self = this;
-        self.listeners.forEach(function(listener) {
-            listener(self);
+    notify() {
+        this.listeners.forEach((listener) => {
+            listener(this);
         });
     },
-    listen: function(listener) {
+    listen(listener) {
         if (this.listeners.indexOf(listener) == -1) {
             this.listeners.push(listener);
         }
     },
-    clearListeners: function() {
+    clearListeners() {
         this.listeners = [];
     },
-    crc8_dvb_s2: function(crc, ch) {
+    crc8_dvb_s2(crc, ch) {
         crc ^= ch;
         for (let ii = 0; ii < 8; ii++) {
             if (crc & 0x80) {
@@ -254,14 +293,14 @@ const MSP = {
         }
         return crc;
     },
-    crc8_dvb_s2_data: function(data, start, end) {
+    crc8_dvb_s2_data(data, start, end) {
         let crc = 0;
         for (let ii = start; ii < end; ii++) {
             crc = this.crc8_dvb_s2(crc, data[ii]);
         }
         return crc;
     },
-    encode_message_v1: function(code, data) {
+    encode_message_v1(code, data) {
         const dataLength = data ? data.length : 0;
         // always reserve 6 bytes for protocol overhead !
         const bufferSize = dataLength + 6;
@@ -284,7 +323,7 @@ const MSP = {
         bufView[5 + dataLength] = checksum;
         return bufferOut;
     },
-    encode_message_v2: function (code, data) {
+    encode_message_v2(code, data) {
         const dataLength = data ? data.length : 0;
         // 9 bytes for protocol overhead
         const bufferSize = dataLength + 9;
@@ -304,17 +343,43 @@ const MSP = {
         bufView[bufferSize - 1] = this.crc8_dvb_s2_data(bufView, 3, bufferSize - 1);
         return bufferOut;
     },
-    send_message: function (code, data, callback_sent, callback_msp, doCallbackOnError) {
-        if (code === undefined || !serial.connectionId || CONFIGURATOR.virtualMode) {
+    encode_message_cli(str) {
+        const data = Array.from(str, c => c.charCodeAt(0));
+        const dataLength = data ? data.length : 0;
+        const bufferSize = dataLength + 3;        // 3 bytes for protocol overhead
+        const bufferOut = new ArrayBuffer(bufferSize);
+        const bufView = new Uint8Array(bufferOut);
+        bufView[0] = this.symbols.START_OF_TEXT;  // STX
+        for (let ii = 0; ii < dataLength; ii++) {
+            bufView[1 + ii] = data[ii];
+        }
+        bufView[bufferSize - 2] = this.symbols.LINE_FEED;   // LF
+        bufView[bufferSize - 1] = this.symbols.END_OF_TEXT; // ETX
+        return bufferOut;
+    },
+    send_cli_command(str, callback) {
+        serial = serialShim();
+
+        const bufferOut = this.encode_message_cli(str);
+        this.cli_callback = callback;
+
+        serial.send(bufferOut);
+    },
+    send_message(code, data, callback_sent, callback_msp, doCallbackOnError) {
+        // Hack to make BT work
+        serial = serialShim();
+
+        const connected = serial.connected;
+
+        if (code === undefined || !connected || CONFIGURATOR.virtualMode) {
             if (callback_msp) {
                 callback_msp();
             }
             return false;
         }
 
-        // Check if request already exists in the queue
         let requestExists = false;
-        for (const instance of MSP.callbacks) {
+        for (const instance of this.callbacks) {
             if (instance.code === code) {
                 requestExists = true;
 
@@ -333,25 +398,25 @@ const MSP = {
         };
 
         if (!requestExists) {
-            obj.timer = setTimeout(function () {
-                console.warn(`MSP: data request timed-out: ${code} ID: ${serial.connectionId} TAB: ${GUI.active_tab} TIMEOUT: ${MSP.timeout} QUEUE: ${MSP.callbacks.length} (${MSP.callbacks.map(function (e) { return e.code; })})`);
-                serial.send(bufferOut, function (_sendInfo) {
+            obj.timer = setTimeout(() => {
+                console.warn(`MSP: data request timed-out: ${code} ID: ${serial.connectionId} TAB: ${GUI.active_tab} TIMEOUT: ${this.timeout} QUEUE: ${this.callbacks.length} (${this.callbacks.map((e) => e.code)})`);
+                serial.send(bufferOut, (_sendInfo) => {
                     obj.stop = performance.now();
                     const executionTime = Math.round(obj.stop - obj.start);
-                    MSP.timeout = Math.max(MSP.MIN_TIMEOUT, Math.min(executionTime, MSP.MAX_TIMEOUT));
+                    this.timeout = Math.max(this.MIN_TIMEOUT, Math.min(executionTime, this.MAX_TIMEOUT));
                 });
-            }, MSP.timeout);
+            }, this.timeout);
         }
 
-        MSP.callbacks.push(obj);
+        this.callbacks.push(obj);
 
         // always send messages with data payload (even when there is a message already in the queue)
         if (data || !requestExists) {
-            if (MSP.timeout > MSP.MIN_TIMEOUT) {
-                MSP.timeout--;
+            if (this.timeout > this.MIN_TIMEOUT) {
+                this.timeout--;
             }
 
-            serial.send(bufferOut, function (sendInfo) {
+            serial.send(bufferOut, (sendInfo) => {
                 if (sendInfo.bytesSent === bufferOut.byteLength) {
                     if (callback_sent) {
                         callback_sent();
@@ -366,23 +431,21 @@ const MSP = {
     /**
      * resolves: {command: code, data: data, length: message_length}
      */
-    promise: async function(code, data) {
-        const self = this;
-
-        return new Promise(function(resolve) {
-            self.send_message(code, data, false, function(_data) {
+    async promise(code, data) {
+        return new Promise((resolve) => {
+            this.send_message(code, data, false, (_data) => {
                 resolve(_data);
             });
         });
     },
-    callbacks_cleanup: function () {
+    callbacks_cleanup() {
         for (const callback of this.callbacks) {
-            clearInterval(callback.timer);
+            clearTimeout(callback.timer);
         }
 
         this.callbacks = [];
     },
-    disconnect_cleanup: function () {
+    disconnect_cleanup() {
         this.state = 0; // reset packet state for "clean" initial entry (this is only required if user hot-disconnects)
         this.packet_error = 0; // reset CRC packet error counter for next session
 

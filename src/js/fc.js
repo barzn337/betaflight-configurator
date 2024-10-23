@@ -1,5 +1,5 @@
 import { bit_check } from "./bit";
-import { API_VERSION_1_42, API_VERSION_1_43, API_VERSION_1_44, API_VERSION_1_45 } from './data_storage';
+import { API_VERSION_1_45, API_VERSION_1_46 } from './data_storage';
 import semver from "semver";
 
 const INITIAL_CONFIG = {
@@ -10,6 +10,7 @@ const INITIAL_CONFIG = {
     buildInfo:                        '',
     buildKey:                         '',
     buildOptions:                     [],
+    gitRevision:                      '',
     multiType:                        0,
     msp_version:                      0, // not specified using semantic versioning
     capability:                       0,
@@ -67,6 +68,59 @@ const INITIAL_BATTERY_CONFIG = {
     currentMeterSource:         0,
 };
 
+const FIRMWARE_BUILD_OPTIONS = {
+    // Radio Protocols
+    USE_SERIALRX_CRSF:          4097,
+    USE_SERIALRX_FPORT:         4098,
+    USE_SERIALRX_GHST:          4099,
+    USE_SERIALRX_IBUS:          4100,
+    USE_SERIALRX_JETIEXBUS:     4101,
+    USE_RX_PPM:                 4102,
+    USE_SERIALRX_SBUS:          4103,
+    USE_SERIALRX_SPEKTRUM:      4104,
+    USE_SERIALRX_SRXL2:         4105,
+    USE_SERIALRX_SUMD:          4106,
+    USE_SERIALRX_SUMH:          4107,
+    USE_SERIALRX_XBUS:          4108,
+
+    // Motor Protocols
+    USE_BRUSHED:                8230,
+    USE_DSHOT:                  8231,
+    USE_MULTISHOT:              8232,
+    USE_ONESHOT:                8233,
+    USE_PROSHOT:                8234,
+    USE_PWM_OUTPUT:             8235,
+
+    // Telemetry Protocols
+    USE_TELEMETRY_FRSKY_HUB:    12301,
+    USE_TELEMETRY_HOTT:         12302,
+    USE_TELEMETRY_IBUS_EXTENDED:12303,
+    USE_TELEMETRY_LTM:          12304,
+    USE_TELEMETRY_MAVLINK:      12305,
+    USE_TELEMETRY_SMARTPORT:    12306,
+    USE_TELEMETRY_SRXL:         12307,
+
+    // General Options
+    USE_ACRO_TRAINER:           16404,
+    USE_AKK_SMARTAUDIO:         16405,
+    USE_BATTERY_CONTINUE:       16406,
+    USE_CAMERA_CONTROL:         16407,
+    USE_DASHBOARD:              16408,
+    USE_EMFAT_TOOLS:            16409,
+    USE_ESCSERIAL_SIMONK:       16410,
+    USE_FRSKYOSD:               16411,
+    USE_GPS:                    16412,
+    USE_LED_STRIP:              16413,
+    USE_LED_STRIP_64:           16414,
+    USE_MAG:                    16415,
+    USE_OSD_SD:                 16416,
+    USE_OSD_HD:                 16417,
+    USE_PINIO:                  16418,
+    USE_RACE_PRO:               16419,
+    USE_SERVOS:                 16420,
+    USE_VTX:                    16421,
+};
+
 const FC = {
 
     // define all the global variables that are uses to hold FC state
@@ -89,27 +143,6 @@ const FC = {
     // and bridges the vue and rest of the code
     CONFIG: {
         ...INITIAL_CONFIG,
-        get hardwareName() {
-            let name;
-            if (this.targetName) {
-                name = this.targetName;
-            } else {
-                name = this.boardIdentifier;
-            }
-
-            if (this.boardName && this.boardName !== name) {
-                name = `${this.boardName}(${name})`;
-            }
-
-            if (this.manufacturerId) {
-                name = `${this.manufacturerId}/${name}`;
-            }
-
-            return name;
-        },
-        set hardwareName(name) {
-            // NOOP, can't really be set. Maybe implement some logic?
-        },
     },
     COPY_PROFILE: null,
     CURRENT_METERS: null,
@@ -122,11 +155,13 @@ const FC = {
     FEATURE_CONFIG: null,
     FILTER_CONFIG: null,
     GPS_CONFIG: null,
+    COMPASS_CONFIG: null,
     GPS_DATA: null,
     GPS_RESCUE: null,
     LED_COLORS: null,
     LED_MODE_COLORS: null,
     LED_STRIP: null,
+    LED_CONFIG_VALUES: [],
     MISC: null, // DEPRECATED
     MIXER_CONFIG: null,
     MODE_RANGES: null,
@@ -152,6 +187,7 @@ const FC = {
     SDCARD: null,
     SENSOR_ALIGNMENT: null,
     SENSOR_CONFIG: null,
+    SENSOR_CONFIG_ACTIVE: null,
     SENSOR_DATA: null,
     SERIAL_CONFIG: null,
     SERVO_CONFIG: null,
@@ -169,9 +205,9 @@ const FC = {
     resetState () {
         // Using `Object.assign` instead of reassigning to
         // trigger the updates on the Vue side
-        Object.assign(this.CONFIG, INITIAL_CONFIG);
-        Object.assign(this.ANALOG, INITIAL_ANALOG);
-        Object.assign(this.BATTERY_CONFIG, INITIAL_BATTERY_CONFIG);
+        this.CONFIG = JSON.parse(JSON.stringify(INITIAL_CONFIG));
+        this.ANALOG = JSON.parse(JSON.stringify(INITIAL_ANALOG));
+        this.BATTERY_CONFIG = JSON.parse(JSON.stringify(INITIAL_BATTERY_CONFIG));
 
         this.BF_CONFIG = {
             currentscale:               0,
@@ -247,6 +283,8 @@ const FC = {
             rcYawRate:                  0,
             rcPitchRate:                0,
             RC_PITCH_EXPO:              0,
+            throttleLimitType:          0,
+            throttleLimitPercent:       100,
             roll_rate_limit:            1998,
             pitch_rate_limit:           1998,
             yaw_rate_limit:             1998,
@@ -280,7 +318,7 @@ const FC = {
             altitude:                   0,
             sonar:                      0,
             kinematics:                 [0.0, 0.0, 0.0],
-            debug:                      [0, 0, 0, 0],
+            debug:                      [0, 0, 0, 0, 0, 0, 0, 0],
         };
 
         this.MOTOR_DATA =               Array.from({length: 8});
@@ -303,6 +341,7 @@ const FC = {
             alt:                        0,
             speed:                      0,
             ground_course:              0,
+            positionalDop:              0,
             distanceToHome:             0,
             directionToHome:            0,
             update:                     0,
@@ -332,6 +371,7 @@ const FC = {
             auto_disarm_delay:          0,
             disarm_kill_switch:         0,
             small_angle:                0,
+            gyro_cal_on_first_arm:      0,
         };
 
         this.FC_CONFIG = {
@@ -367,6 +407,10 @@ const FC = {
             auto_baud:                  0,
             home_point_once:            0,
             ublox_use_galileo:          0,
+        };
+
+        this.COMPASS_CONFIG = {
+            mag_declination:            0,
         };
 
         this.RSSI_CONFIG = {
@@ -435,7 +479,7 @@ const FC = {
             use_unsyncedPwm:            0,
             fast_pwm_protocol:          0,
             motor_pwm_rate:             0,
-            digitalIdlePercent:         0,
+            motorIdle:                  0,
             gyroUse32kHz:               0,
             motorPwmInversion:          0,
             gyroHighFsr:                0,
@@ -511,11 +555,11 @@ const FC = {
             feedforwardYaw:             0,
             feedforwardTransition:      0,
             antiGravityMode:            0,
-            dMinRoll:                   0,
-            dMinPitch:                  0,
-            dMinYaw:                    0,
-            dMinGain:                   0,
-            dMinAdvance:                0,
+            dMaxRoll:                   0,
+            dMaxPitch:                  0,
+            dMaxYaw:                    0,
+            dMaxGain:                   0,
+            dMaxAdvance:                0,
             useIntegratedYaw:           0,
             integratedYawRelax:         0,
             motorOutputLimit:           0,
@@ -539,6 +583,8 @@ const FC = {
             mag_hardware:               0,
             sonar_hardware:             0,
         };
+
+        this.SENSOR_CONFIG_ACTIVE = { gyro_hardware: 0, ...this.SENSOR_CONFIG };
 
         this.RX_CONFIG = {
             serialrx_provider:            0,
@@ -564,7 +610,7 @@ const FC = {
             rcSmoothingAutoFactor:        0,
             usbCdcHidType:                0,
             rcSmoothingMode:              0,
-            elrsUid:                      0,
+            elrsUid:                      [0, 0, 0, 0, 0, 0],
         };
 
         this.FAILSAFE_CONFIG = {
@@ -578,9 +624,9 @@ const FC = {
 
         this.GPS_RESCUE = {
             angle:                          0,
-            initialAltitudeM:               0,
+            returnAltitudeM:                0,
             descentDistanceM:               0,
-            rescueGroundspeed:              0,
+            groundSpeed:                    0,
             throttleMin:                    0,
             throttleMax:                    0,
             throttleHover:                  0,
@@ -590,7 +636,8 @@ const FC = {
             descendRate:                    0,
             allowArmingWithoutFix:          0,
             altitudeMode:                   0,
-            minRescueDth:                   0,
+            minStartDistM:                  0,
+            initialClimbM:                  0,
         };
 
         this.RXFAIL_CONFIG = [];
@@ -734,21 +781,70 @@ const FC = {
             'CRSF',
             'SPEKTRUM2048/SRXL',
             'TARGET_CUSTOM',
-            'FrSky FPort',
+            'FPORT',
+            'SPEKTRUM SRXL2',
+            'IRC GHOST',
         ];
 
-        if (semver.gte(apiVersion, API_VERSION_1_42)) {
-            serialRxTypes.push('SPEKTRUM SRXL2');
-        }
-
-        if (semver.gte(apiVersion, API_VERSION_1_44)) {
-            serialRxTypes.push('IRC GHOST');
+        if (semver.gte(apiVersion, API_VERSION_1_46)) {
+            // Default to NONE and move SPEKTRUM1024 to the end (firmware PR #12500)
+            serialRxTypes[0] = 'NONE';
+            serialRxTypes.push('SPEKTRUM1024');
         }
 
         return serialRxTypes;
     },
 
-    getHardwareName() {
+    getSupportedSerialRxTypes: () => {
+        if (FC.CONFIG.buildOptions?.length) {
+            const options = FC.CONFIG.buildOptions;
+            let supportedRxTypes = ['NONE'];
+            if (options.includes('USE_SERIALRX_TARGET_CUSTOM')) {
+                supportedRxTypes.push('TARGET_CUSTOM');
+            }
+            if (options.includes('USE_SERIALRX_SPEKTRUM')) {
+                supportedRxTypes.push('SPEKTRUM1024');
+                supportedRxTypes.push('SPEKTRUM2048');
+                supportedRxTypes.push('SPEKTRUM2048/SRXL');
+            }
+            if (options.includes('USE_SERIALRX_SBUS')) {
+                supportedRxTypes.push('SBUS');
+            }
+            if (options.includes('USE_SERIALRX_SUMD')) {
+                supportedRxTypes.push('SUMD');
+            }
+            if (options.includes('USE_SERIALRX_SUMH')) {
+                supportedRxTypes.push('SUMH');
+            }
+            if (options.includes('USE_SERIALRX_XBUS')) {
+                supportedRxTypes.push('XBUS_MODE_B');
+                supportedRxTypes.push('XBUS_MODE_B_RJ01');
+            }
+            if (options.includes('USE_SERIALRX_IBUS')) {
+                supportedRxTypes.push('IBUS');
+            }
+            if (options.includes('USE_SERIALRX_JETIEXBUS')) {
+                supportedRxTypes.push('JETIEXBUS');
+            }
+            if (options.includes('USE_SERIALRX_CRSF')) {
+                supportedRxTypes.push('CRSF');
+            }
+            if (options.includes('USE_SERIALRX_FPORT')) {
+                supportedRxTypes.push('FPORT');
+            }
+            if (options.includes('USE_SERIALRX_SRXL2')) {
+                supportedRxTypes.push('SPEKTRUM SRXL2');
+            }
+            if (options.includes('USE_SERIALRX_GHST')) {
+                supportedRxTypes.push('IRC GHOST');
+            }
+            return supportedRxTypes;
+        }
+
+        return FC.getSerialRxTypes();
+    },
+
+    calculateHardwareName() {
         let name;
         if (this.CONFIG.targetName) {
             name = this.CONFIG.targetName;
@@ -764,7 +860,7 @@ const FC = {
             name = `${this.CONFIG.manufacturerId}/${name}`;
         }
 
-        return name;
+        this.CONFIG.hardwareName = name;
     },
 
     MCU_TYPES: {
@@ -813,17 +909,27 @@ const FC = {
         MOTOR_PROTOCOL_DISABLED: 1,
     },
 
+    processBuildOptions() {
+        const buildOptions = [];
+
+        for (const [key, value] of Object.entries(FIRMWARE_BUILD_OPTIONS)) {
+            for (const option of this.CONFIG.buildOptions) {
+                if (option === value) {
+                    buildOptions.push(key);
+                    break;
+                }
+            }
+        }
+
+        this.CONFIG.buildOptions = buildOptions;
+    },
+
     boardHasVcp() {
         return bit_check(this.CONFIG.targetCapabilities, this.TARGET_CAPABILITIES_FLAGS.HAS_VCP);
     },
 
     boardHasFlashBootloader() {
-        let hasFlashBootloader = false;
-        if (semver.gte(this.CONFIG.apiVersion, API_VERSION_1_42)) {
-            hasFlashBootloader = bit_check(this.CONFIG.targetCapabilities, this.TARGET_CAPABILITIES_FLAGS.HAS_FLASH_BOOTLOADER);
-        }
-
-        return hasFlashBootloader;
+        return bit_check(this.CONFIG.targetCapabilities, this.TARGET_CAPABILITIES_FLAGS.HAS_FLASH_BOOTLOADER);
     },
 
     FILTER_TYPE_FLAGS: {
@@ -843,31 +949,30 @@ const FC = {
         versionFilterDefaults.dterm_lowpass2_hz = 150;
         versionFilterDefaults.dterm_lowpass2_type = this.FILTER_TYPE_FLAGS.BIQUAD;
 
-        if (semver.gte(this.CONFIG.apiVersion, API_VERSION_1_42)) {
-            versionFilterDefaults.gyro_lowpass_hz = 200;
-            versionFilterDefaults.gyro_lowpass_dyn_min_hz = 200;
-            versionFilterDefaults.gyro_lowpass_dyn_max_hz = 500;
-            versionFilterDefaults.gyro_lowpass_type = this.FILTER_TYPE_FLAGS.PT1;
-            versionFilterDefaults.gyro_lowpass2_hz = 250;
-            versionFilterDefaults.gyro_lowpass2_type = this.FILTER_TYPE_FLAGS.PT1;
-            versionFilterDefaults.dterm_lowpass_hz = 150;
-            versionFilterDefaults.dterm_lowpass_dyn_min_hz = 70;
-            versionFilterDefaults.dterm_lowpass_dyn_max_hz = 170;
-            versionFilterDefaults.dterm_lowpass_type = this.FILTER_TYPE_FLAGS.PT1;
-            versionFilterDefaults.dterm_lowpass2_hz = 150;
-            versionFilterDefaults.dterm_lowpass2_type = this.FILTER_TYPE_FLAGS.PT1;
-        }
+        // Introduced in 1.42
+        versionFilterDefaults.gyro_lowpass_hz = 200;
+        versionFilterDefaults.gyro_lowpass_dyn_min_hz = 200;
+        versionFilterDefaults.gyro_lowpass_dyn_max_hz = 500;
+        versionFilterDefaults.gyro_lowpass_type = this.FILTER_TYPE_FLAGS.PT1;
+        versionFilterDefaults.gyro_lowpass2_hz = 250;
+        versionFilterDefaults.gyro_lowpass2_type = this.FILTER_TYPE_FLAGS.PT1;
+        versionFilterDefaults.dterm_lowpass_hz = 150;
+        versionFilterDefaults.dterm_lowpass_dyn_min_hz = 70;
+        versionFilterDefaults.dterm_lowpass_dyn_max_hz = 170;
+        versionFilterDefaults.dterm_lowpass_type = this.FILTER_TYPE_FLAGS.PT1;
+        versionFilterDefaults.dterm_lowpass2_hz = 150;
+        versionFilterDefaults.dterm_lowpass2_type = this.FILTER_TYPE_FLAGS.PT1;
 
-        if (semver.gte(this.CONFIG.apiVersion, API_VERSION_1_44)) {
-            versionFilterDefaults.dyn_notch_q = 300;
-            versionFilterDefaults.gyro_lowpass_hz = 250;
-            versionFilterDefaults.gyro_lowpass_dyn_min_hz = 250;
-            versionFilterDefaults.gyro_lowpass2_hz = 500;
-            versionFilterDefaults.dterm_lowpass_hz = 75;
-            versionFilterDefaults.dterm_lowpass_dyn_min_hz = 75;
-            versionFilterDefaults.dterm_lowpass_dyn_max_hz = 150;
-        }
+        // Introduced in 1.44
+        versionFilterDefaults.dyn_notch_q = 300;
+        versionFilterDefaults.gyro_lowpass_hz = 250;
+        versionFilterDefaults.gyro_lowpass_dyn_min_hz = 250;
+        versionFilterDefaults.gyro_lowpass2_hz = 500;
+        versionFilterDefaults.dterm_lowpass_hz = 75;
+        versionFilterDefaults.dterm_lowpass_dyn_min_hz = 75;
+        versionFilterDefaults.dterm_lowpass_dyn_max_hz = 150;
 
+        // Introduced in 1.45
         if (semver.gte(this.CONFIG.apiVersion, API_VERSION_1_45)) {
             versionFilterDefaults.dyn_notch_min_hz = 100;
         }
@@ -876,22 +981,14 @@ const FC = {
     },
 
     getPidDefaults() {
-        let versionPidDefaults = this.DEFAULT_PIDS;
         // if defaults change they should go here
-        if (semver.eq(this.CONFIG.apiVersion, API_VERSION_1_43)) {
-            versionPidDefaults = [
-                42, 85, 35, 23, 90,
-                46, 90, 38, 25, 95,
-                45, 90,  0,  0, 90,
-            ];
-        }
-        if (semver.gte(this.CONFIG.apiVersion, API_VERSION_1_44)) {
-            versionPidDefaults = [
-                45, 80, 40, 30, 120,
-                47, 84, 46, 34, 125,
-                45, 80,  0,  0, 120,
-            ];
-        }
+        // Introduced in 1.44
+        const versionPidDefaults = [
+            45, 80, 30, 40, 120,
+            47, 84, 34, 46, 125,
+            45, 80,  0,  0, 120,
+        ];
+
         return versionPidDefaults;
     },
 

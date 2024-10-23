@@ -5,6 +5,7 @@ import FC from "../fc";
 import semver from 'semver';
 import MSP from "../msp";
 import MSPCodes from "../msp/MSPCodes";
+import $ from 'jquery';
 import { API_VERSION_1_46 } from '../data_storage';
 
 const led_strip = {
@@ -18,7 +19,7 @@ led_strip.initialize = function (callback, scrollPosition) {
     const functionTag = '.function-';
 
     TABS.led_strip.functions = ['i', 'w', 'f', 'a', 't', 'r', 'c', 'g', 's', 'b', 'l', 'o', 'y'];
-    TABS.led_strip.baseFuncs = ['c', 'f', 'a', 'l', 's', 'g', 'r'];
+    TABS.led_strip.baseFuncs = ['c', 'f', 'a', 'l', 's', 'g', 'r', 'p', 'e', 'u'];
     TABS.led_strip.overlays =  ['t', 'y', 'o', 'b', 'v', 'i', 'w'];
 
     if (semver.lt(FC.CONFIG.apiVersion,API_VERSION_1_46)) {
@@ -40,7 +41,11 @@ led_strip.initialize = function (callback, scrollPosition) {
     }
 
     function load_led_mode_colors() {
-        MSP.send_message(MSPCodes.MSP_LED_STRIP_MODECOLOR, false, false, load_html);
+        MSP.send_message(MSPCodes.MSP_LED_STRIP_MODECOLOR, false, false,  semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_46) ? load_led_config_values : load_html);
+    }
+
+    function load_led_config_values() {
+        MSP.send_message(MSPCodes.MSP2_GET_LED_STRIP_CONFIG_VALUES, false, false, load_html);
     }
 
     function load_html() {
@@ -377,6 +382,8 @@ led_strip.initialize = function (callback, scrollPosition) {
                         if (feature_o.is(':checked') !== newVal) {
                             feature_o.prop('checked', newVal);
                             feature_o.trigger('change');
+
+                            $('.rainbowSlidersDiv').toggle($('.checkbox.rainbowOverlay').find('input').is(':checked')); //rainbow slider visibility
                         }
                     });
 
@@ -420,8 +427,8 @@ led_strip.initialize = function (callback, scrollPosition) {
         $('.modeSelect').on('change', function() {
 
             const that = this;
-
             const mode = Number($(that).val());
+
             $('.mode_colors').find('button').each(function() {
                 for (let i = 0; i < 6; i++) {
                     for (let j = 0; j < 6; j++) {
@@ -432,7 +439,6 @@ led_strip.initialize = function (callback, scrollPosition) {
                     }
                 }
             });
-
             $('.mode_colors').each(function() { setModeBackgroundColor($(this)); });
         });
 
@@ -456,6 +462,9 @@ led_strip.initialize = function (callback, scrollPosition) {
                                     break;
                                 case 'b':
                                 case 'i':
+                                case 'p':
+                                case 'e':
+                                case 'u':
                                     if (areOverlaysActive(`function-${f}`))
                                         p.addClass(`function-${letter}`);
                                     break;
@@ -501,6 +510,11 @@ led_strip.initialize = function (callback, scrollPosition) {
                         larson.trigger('change');
                         toggleSwitch(larson, 'o');
                     }
+                }
+
+                //Change Rainbow slider visibility
+                if (that.is('.function-y')) {
+                    $('.rainbowSlidersDiv').toggle(that.is(':checked'));
                 }
 
                 if ($('.ui-selected').length > 0) {
@@ -554,7 +568,83 @@ led_strip.initialize = function (callback, scrollPosition) {
             $(this).addClass(`color-${led.color}`);
         });
 
+        //default slider values
+        $('div.brightnessSlider input').first().prop('value', FC.LED_CONFIG_VALUES.brightness);
+        $('div.brightnessSlider label').first().text($('div.brightnessSlider input').first().val());
+        $('div.rainbowDeltaSlider input').first().prop('value', FC.LED_CONFIG_VALUES.rainbow_delta);
+        $('div.rainbowDeltaSlider label').first().text($('div.rainbowDeltaSlider input').first().val());
+        $('div.rainbowFreqSlider input').first().prop('value', FC.LED_CONFIG_VALUES.rainbow_freq);
+        $('div.rainbowFreqSlider label').first().text($('div.rainbowFreqSlider input').first().val());
+
+        //Brightness slider
+        let bufferingBrightness = [],
+        buffer_delay_brightness = false;
+
+        $('div.brightnessSlider input').on('input', function () {
+            const val = $(this).val();
+            bufferingBrightness.push(val);
+
+            if (!buffer_delay_brightness) {
+                buffer_delay_brightness = setTimeout(function () {
+                    FC.LED_CONFIG_VALUES.brightness = bufferingBrightness.pop();
+                    mspHelper.sendLedStripConfigValues();
+
+                    bufferingBrightness = [];
+                    buffer_delay_brightness = false;
+                }, 10);
+            }
+
+            $('div.brightnessSlider label').first().text(val);
+        });
+
+        //Rainbow Delta slider
+        let bufferingRainbowDelta = [],
+        buffer_delay_rainbow_delta = false;
+
+        $('div.rainbowDeltaSlider input').on('input', function () {
+            const val = $(this).val();
+            bufferingRainbowDelta.push(val);
+
+            if (!buffer_delay_rainbow_delta) {
+                buffer_delay_rainbow_delta = setTimeout(function () {
+                    FC.LED_CONFIG_VALUES.rainbow_delta = bufferingRainbowDelta.pop();
+                    mspHelper.sendLedStripConfigValues();
+
+                    bufferingRainbowDelta = [];
+                    buffer_delay_rainbow_delta = false;
+                }, 10);
+            }
+
+            $('div.rainbowDeltaSlider label').first().text(val);
+        });
+
+        //Rainbow Frequency slider
+        let bufferingRainbowFreq = [],
+        buffer_delay_rainbow_freq = false;
+
+        $('div.rainbowFreqSlider input').on('input', function () {
+            const val = $(this).val();
+            bufferingRainbowFreq.push(val);
+
+            if (!buffer_delay_rainbow_freq) {
+                buffer_delay_rainbow_freq = setTimeout(function () {
+                    FC.LED_CONFIG_VALUES.rainbow_freq = bufferingRainbowFreq.pop();
+                    mspHelper.sendLedStripConfigValues();
+
+                    bufferingRainbowFreq = [];
+                    buffer_delay_rainbow_freq = false;
+                }, 10);
+            }
+
+            $('div.rainbowFreqSlider label').first().text(val);
+        });
+
+
         $('a.save').on('click', function () {
+            const saveButton = $('a.save');
+            const oldText = saveButton.text();
+            saveButton.html(i18n.getMessage('buttonSaving')).addClass('disabled');
+
             mspHelper.sendLedStripConfig(send_led_strip_colors);
 
             function send_led_strip_colors() {
@@ -566,7 +656,20 @@ led_strip.initialize = function (callback, scrollPosition) {
             }
 
             function save_to_eeprom() {
-                mspHelper.writeConfiguration(false);
+                mspHelper.writeConfiguration(false, save_completed);
+            }
+
+            function save_completed() {
+                const buttonDelay = 1500;
+
+                 // Allow firmware to make relevant changes before initialization
+                setTimeout(() => {
+                    saveButton.html(i18n.getMessage('buttonSaved'));
+
+                    setTimeout(() => {
+                        saveButton.html(oldText).removeClass('disabled');
+                    }, buttonDelay);
+                }, buttonDelay);
             }
         });
 
@@ -716,6 +819,9 @@ led_strip.initialize = function (callback, scrollPosition) {
             case "function-c":
             case "function-a":
             case "function-f":
+            case "function-p":
+            case "function-e":
+            case "function-u":
             case "function-s":
             case "function-l":
             case "function-r":
@@ -785,6 +891,8 @@ led_strip.initialize = function (callback, scrollPosition) {
 
         $('.vtxOverlay').toggle(isVtxActive(activeFunction));
 
+        $('.brightnessSliderDiv').toggle(semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_46));
+
         // set mode colors visibility
         if (activeFunction === "function-f") {
             $('.mode_colors').show();
@@ -807,11 +915,14 @@ led_strip.initialize = function (callback, scrollPosition) {
         switch (activeFunction) {
             case "":           // none
             case "function-f": // Modes & Orientation
+                $('.modeSelect').show();
+                $('.special_colors').hide();
             case "function-l": // Battery
                 // $('.mode_color-6-3').show(); // background
                 $('.special_colors').hide();
                 break;
             case "function-g": // GPS
+                $('.modeSelect').show();
                 $('.mode_color-6-5').show(); // no sats
                 $('.mode_color-6-6').show(); // no lock
                 $('.mode_color-6-7').show(); // locked
@@ -821,6 +932,7 @@ led_strip.initialize = function (callback, scrollPosition) {
                 $('.mode_color-6-4').show(); // blink background
                 break;
             case "function-a": // Arm state
+                $('.modeSelect').hide();
                 $('.mode_color-6-0').show(); // disarmed
                 $('.mode_color-6-1').show(); // armed
                 break;
@@ -931,7 +1043,7 @@ led_strip.initialize = function (callback, scrollPosition) {
 
     function drawColorBoxesInColorLedPoints() {
         $('.gPoint').each(function() {
-            if ($(this).is('.function-c') || $(this).is('.function-r') || $(this).is('.function-b')) {
+            if ($(this).is('.function-c') || $(this).is('.function-r') || $(this).is('.function-b') || $(this).is('.function-u')) {
                 $(this).find('.overlay-color').show();
 
                 for (let colorIndex = 0; colorIndex < 16; colorIndex++) {

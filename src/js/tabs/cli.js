@@ -1,20 +1,23 @@
 import { i18n } from "../localization";
-import Clipboard from "../Clipboard";
+import BFClipboard from "../Clipboard";
 import { generateFilename } from "../utils/generate_filename";
 import GUI, { TABS } from '../gui';
 import BuildApi from '../BuildApi';
 import { tracking } from '../Analytics';
 import { reinitializeConnection } from "../serial_backend";
 import CONFIGURATOR from "../data_storage";
-import serial from "../serial";
 import CliAutoComplete from "../CliAutoComplete";
-import UI_PHONES from "../phones_ui";
 import { gui_log } from "../gui_log";
 import jBox from "jbox";
-import { checkChromeRuntimeError } from "../utils/common";
+import $ from 'jquery';
+import { serialShim } from "../serial_shim";
+import FileSystem from "../FileSystem";
+import { ispConnected } from "../utils/connection";
+
+const serial =  serialShim();
 
 const cli = {
-    lineDelayMs: 15,
+    lineDelayMs: 5,
     profileSwitchDelayMs: 100,
     outputHistory: "",
     cliBuffer: "",
@@ -64,7 +67,7 @@ function getCliCommand(command, cliBuffer) {
 function copyToClipboard(text) {
     function onCopySuccessful() {
 
-        tracking.sendEvent(tracking.EVENT_CATEGORIES.FLIGHT_CONTROLLER, 'CliCopyToClipboard', text.length);
+        tracking.sendEvent(tracking.EVENT_CATEGORIES.FLIGHT_CONTROLLER, 'CliCopyToClipboard', { length: text.length });
         const button = TABS.cli.GUI.copyButton;
         const origText = button.text();
         const origWidth = button.css("width");
@@ -86,7 +89,7 @@ function copyToClipboard(text) {
         console.warn(ex);
     }
 
-    Clipboard.writeText(text, onCopySuccessful, onCopyFailed);
+    BFClipboard.writeText(text, onCopySuccessful, onCopyFailed);
 }
 
 cli.initialize = function (callback) {
@@ -107,31 +110,78 @@ cli.initialize = function (callback) {
         self.GUI.windowWrapper.empty();
     }
 
-    function executeCommands(outString) {
+    async function executeCommands(outString) {
         self.history.add(outString.trim());
 
+        function sendCommandIterative(commandArray) {
+
+            const command = commandArray.shift();
+
+            let line = command.trim();
+            let processingDelay = self.lineDelayMs;
+            if (line.toLowerCase().startsWith('profile')) {
+                processingDelay = self.profileSwitchDelayMs;
+            }
+            const isLastCommand = outputArray.length === 0;
+            if (isLastCommand && self.cliBuffer) {
+                line = getCliCommand(line, self.cliBuffer);
+            }
+
+            self.sendLine(line);
+
+            if (!isLastCommand) {
+                GUI.timeout_add('CLI_send_slowly', function () {
+                    sendCommandIterative(commandArray);
+                }, processingDelay);
+            }
+
+        }
+
         const outputArray = outString.split("\n");
-        return outputArray.reduce((p, line, index) =>
-            p.then((delay) =>
-                new Promise((resolve) => {
-                    GUI.timeout_add('CLI_send_slowly', function () {
-                        let processingDelay = self.lineDelayMs;
-                        line = line.trim();
-                        if (line.toLowerCase().startsWith('profile')) {
-                            processingDelay = self.profileSwitchDelayMs;
-                        }
-                        const isLastCommand = outputArray.length === index + 1;
-                        if (isLastCommand && self.cliBuffer) {
-                            line = getCliCommand(line, self.cliBuffer);
-                        }
-                        self.sendLine(line, function () {
-                            resolve(processingDelay);
-                        });
-                    }, delay);
-                }),
-            ),
-            Promise.resolve(0),
-        );
+        sendCommandIterative(outputArray);
+
+    }
+
+    async function loadFile() {
+        const previewArea = $("#snippetpreviewcontent textarea#preview");
+
+        function executeSnippet(fileName) {
+            const commands = previewArea.val();
+
+            tracking.sendEvent(tracking.EVENT_CATEGORIES.FLIGHT_CONTROLLER, 'CliExecuteFromFile', { filename: fileName });
+
+            executeCommands(commands);
+            self.GUI.snippetPreviewWindow.close();
+        }
+
+        function previewCommands(result, fileName) {
+            if (!self.GUI.snippetPreviewWindow) {
+                self.GUI.snippetPreviewWindow = new jBox("Modal", {
+                    id: "snippetPreviewWindow",
+                    width: 'auto',
+                    height: 'auto',
+                    closeButton: 'title',
+                    animation: false,
+                    isolateScroll: false,
+                    title: i18n.getMessage("cliConfirmSnippetDialogTitle", { fileName: fileName }),
+                    content: $('#snippetpreviewcontent'),
+                    onCreated: () =>
+                        $("#snippetpreviewcontent a.confirm").click(() => executeSnippet(fileName))
+                    ,
+                });
+            }
+            previewArea.val(result);
+            self.GUI.snippetPreviewWindow.open();
+        }
+
+        const file = await FileSystem.pickOpenFile(i18n.getMessage('fileSystemPickerFiles', {typeof: 'TXT'}), '.txt');
+        const contents = await FileSystem.readFile(file);
+        previewCommands(contents, file.name);
+    }
+
+    async function saveFile(filename, content) {
+        const file = await FileSystem.pickSaveFile(filename, i18n.getMessage('fileSystemPickerFiles', {typeof: 'TXT'}), '.txt');
+        await FileSystem.writeFile(file, content);
     }
 
     $('#content').load("./tabs/cli.html", function () {
@@ -142,7 +192,7 @@ cli.initialize = function (callback) {
 
         CONFIGURATOR.cliActive = true;
 
-        self.GUI.copyButton = $('.tab-cli .copy');
+        self.GUI.copyButton = $('a.copy');
         self.GUI.windowWrapper = $('.tab-cli .window .wrapper');
 
         const textarea = $('.tab-cli textarea[name="commands"]');
@@ -161,138 +211,45 @@ cli.initialize = function (callback) {
                 .focus();
         });
 
-        $('.tab-cli .save').click(function() {
-            const prefix = 'cli';
-            const suffix = 'txt';
+        $('a.save').on('click', function() {
+            const filename = generateFilename('cli', 'txt');
 
-            const filename = generateFilename(prefix, suffix);
-
-            const accepts = [{
-                description: `${suffix.toUpperCase()} files`, extensions: [suffix],
-            }];
-
-            chrome.fileSystem.chooseEntry({type: 'saveFile', suggestedName: filename, accepts: accepts}, function(entry) {
-                if (checkChromeRuntimeError()) {
-                    return;
-                }
-
-                if (!entry) {
-                    console.log('No file selected');
-                    return;
-                }
-
-                entry.createWriter(function (writer) {
-                    writer.onerror = function (){
-                        console.error('Failed to write file');
-                    };
-
-                    writer.onwriteend = function () {
-                        if (self.outputHistory.length > 0 && writer.length === 0) {
-                            writer.write(new Blob([self.outputHistory], {type: 'text/plain'}));
-                        } else {
-                            tracking.sendEvent(tracking.EVENT_CATEGORIES.FLIGHT_CONTROLLER, 'CliSave', self.outputHistory.length);
-
-                            console.log('write complete');
-                        }
-                    };
-
-                    writer.truncate(0);
-                }, function (){
-                    console.error('Failed to get file writer');
-                });
-            });
+            saveFile(filename, self.outputHistory);
         });
 
-        $('.tab-cli .clear').click(function() {
+        $('a.clear').click(function() {
             clearHistory();
         });
 
-        if (Clipboard.available) {
-            self.GUI.copyButton.click(function() {
-                copyToClipboard(self.outputHistory);
-            });
-        } else {
-            self.GUI.copyButton.hide();
-        }
-
-        $('.tab-cli .load').click(function() {
-            const accepts = [
-                {
-                    description: 'Config files', extensions: ["txt", "config"],
-                },
-                {
-                    description: 'All files',
-                },
-            ];
-
-            chrome.fileSystem.chooseEntry({type: 'openFile', accepts: accepts}, function(entry) {
-                if (checkChromeRuntimeError()) {
-                    return;
-                }
-
-                const previewArea = $("#snippetpreviewcontent textarea#preview");
-
-                function executeSnippet(fileName) {
-                    const commands = previewArea.val();
-
-                    tracking.sendEvent(tracking.EVENT_CATEGORIES.FLIGHT_CONTROLLER, 'CliExecuteFromFile', fileName);
-
-                    executeCommands(commands);
-                    self.GUI.snippetPreviewWindow.close();
-                }
-
-                function previewCommands(result, fileName) {
-                    if (!self.GUI.snippetPreviewWindow) {
-                        self.GUI.snippetPreviewWindow = new jBox("Modal", {
-                            id: "snippetPreviewWindow",
-                            width: 'auto',
-                            height: 'auto',
-                            closeButton: 'title',
-                            animation: false,
-                            isolateScroll: false,
-                            title: i18n.getMessage("cliConfirmSnippetDialogTitle", { fileName: fileName }),
-                            content: $('#snippetpreviewcontent'),
-                            onCreated: () =>
-                                $("#snippetpreviewcontent a.confirm").click(() => executeSnippet(fileName))
-                            ,
-                        });
-                    }
-                    previewArea.val(result);
-                    self.GUI.snippetPreviewWindow.open();
-                }
-
-                entry.file((file) => {
-                    const reader = new FileReader();
-                    reader.onload =
-                        () => previewCommands(reader.result, file.name);
-                    reader.onerror = () => console.error(reader.error);
-                    reader.readAsText(file);
-                });
-            });
+        self.GUI.copyButton.click(function() {
+            copyToClipboard(self.outputHistory);
         });
 
-        $('.tab-cli .support')
-        .toggle(navigator.onLine)
+        $('a.load').on('click', function() {
+            loadFile();
+        });
+
+        $('a.support')
+        .toggle(ispConnected())
         .on('click', function() {
 
             function submitSupportData(data) {
                 clearHistory();
                 const api = new BuildApi();
 
-                api.getSupportCommands(commands => {
+                api.getSupportCommands(async commands => {
                     commands = [`###\n# Problem description\n# ${data}\n###`, ...commands];
-                    executeCommands(commands.join('\n')).then(() => {
-                        const delay = setInterval(() => {
-                            const time = new Date().getTime();
-                            if (self.lastArrival < time - 250) {
-                                clearInterval(delay);
-                                const text = self.outputHistory;
-                                api.submitSupportData(text, key => {
-                                    writeToOutput(i18n.getMessage('buildServerSupportRequestSubmission', [key]));
-                                });
-                            }
-                        }, 250);
-                    });
+                    await executeCommands(commands.join('\n'));
+                    const delay = setInterval(() => {
+                        const time = new Date().getTime();
+                        if (self.lastArrival < time - 250) {
+                            clearInterval(delay);
+                            const text = self.outputHistory;
+                            api.submitSupportData(text, key => {
+                                writeToOutput(i18n.getMessage('buildServerSupportRequestSubmission', [key]));
+                            });
+                        }
+                    }, 250);
                 });
             }
 
@@ -377,10 +334,6 @@ cli.adaptPhones = function() {
         const backdropHeight = $('.note').height() + 22 + 38;
         $('.backdrop').css('height', `calc(100% - ${backdropHeight}px)`);
     }
-
-    if (GUI.isCordova()) {
-        UI_PHONES.initToolbar();
-    }
 };
 
 cli.history = {
@@ -445,7 +398,7 @@ cli.read = function (readInfo) {
         Windows understands (both) CRLF
         Chrome OS currently unknown
     */
-    const data = new Uint8Array(readInfo.data);
+    const data = new Uint8Array(readInfo.data ?? readInfo);
     let validateText = "";
     let sequenceCharsToSkip = 0;
 
@@ -588,18 +541,19 @@ cli.cleanup = function (callback) {
 
         return;
     }
+
     this.send(getCliCommand('exit\r', this.cliBuffer), function () {
         // we could handle this "nicely", but this will do for now
         // (another approach is however much more complicated):
         // we can setup an interval asking for data lets say every 200ms, when data arrives, callback will be triggered and tab switched
         // we could probably implement this someday
-        if (callback) {
-            callback();
-        }
-
-        CONFIGURATOR.cliActive = false;
-        CONFIGURATOR.cliValid = false;
+        reinitializeConnection(function () {
+            GUI.timeout_add('tab_change_callback', callback, 500);
+        });
     });
+
+    CONFIGURATOR.cliActive = false;
+    CONFIGURATOR.cliValid = false;
 
     CliAutoComplete.cleanup();
     $(CliAutoComplete).off();

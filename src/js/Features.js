@@ -1,7 +1,8 @@
 import { bit_check, bit_set, bit_clear } from "./bit";
-import { API_VERSION_1_44, API_VERSION_1_45 } from './data_storage';
+import { API_VERSION_1_45, API_VERSION_1_46, API_VERSION_1_47 } from './data_storage';
 import semver from "semver";
 import { tracking } from "./Analytics";
+import $ from 'jquery';
 
 const Features = function (config) {
     const self = this;
@@ -26,26 +27,47 @@ const Features = function (config) {
         {bit: 20, group: 'other', name: 'CHANNEL_FORWARDING', dependsOn: 'SERVOS'},
         {bit: 21, group: 'other', name: 'TRANSPONDER', haveTip: true, dependsOn: 'TRANSPONDER'},
         {bit: 22, group: 'other', name: 'AIRMODE'},
-        {bit: 24, group: 'vtx', name: 'VTX', dependsOn: 'VTX'},
         {bit: 25, group: 'rxMode', mode: 'select', name: 'RX_SPI'},
         {bit: 27, group: 'escSensor', name: 'ESC_SENSOR'},
         {bit: 28, group: 'antiGravity', name: 'ANTI_GRAVITY', haveTip: true, hideName: true},
     ];
 
-    if (semver.lt(config.apiVersion, API_VERSION_1_44)) { // DYNAMIC_FILTER got removed from FEATURES in BF 4.3 / API 1.44
-        features.push(
-            {bit: 29, group: 'other', name: 'DYNAMIC_FILTER'},
-        );
-    }
-
     self._features = features;
 
-    if (semver.gte(config.apiVersion, API_VERSION_1_45) && config.buildOptions.length) {
-        self._features = [];
+    function addFeatureDependsOn(obj, featureName, dependsOn) {
+        obj.forEach(f => {
+            if (f.name === featureName) {
+                f.dependsOn = dependsOn;
+            }
+        });
+    }
 
-        for (const feature of features) {
-            if (config.buildOptions.some(opt => opt.includes(feature.dependsOn)) || feature.dependsOn === undefined) {
-                self._features.push(feature);
+    if (semver.gte(config.apiVersion, API_VERSION_1_47)) {
+        addFeatureDependsOn(self._features, 'SOFTSERIAL', 'SOFTSERIAL');
+    }
+
+    if (config.buildOptions?.length) {
+        // Filter features based on build options
+        if (semver.gte(config.apiVersion, API_VERSION_1_45)) {
+            self._features = [];
+
+            for (const feature of features) {
+                if (config.buildOptions.some(opt => opt.includes(feature.dependsOn)) || feature.dependsOn === undefined) {
+                    self._features.push(feature);
+                }
+            }
+        }
+
+        // Add TELEMETRY feature if any of the following protocols are used: CRSF, GHST, FPORT, JETI
+        if (semver.gte(config.apiVersion, API_VERSION_1_46)) {
+            let enableTelemetry = false;
+            if (config.buildOptions.some(opt => opt.includes('CRSF') || opt.includes('GHST') || opt.includes('FPORT') || opt.includes('JETI'))) {
+                enableTelemetry = true;
+            }
+
+            const telemetryFeature = self._features.filter(f => f.name === 'TELEMETRY')?.[0];
+            if (enableTelemetry && !telemetryFeature) {
+                self._features.push({bit: 10, group: 'telemetry', name: 'TELEMETRY', haveTip: true, dependsOn: 'TELEMETRY'});
             }
         }
     }
@@ -139,7 +161,10 @@ Features.prototype.generateElements = function (featuresElements) {
             element += `type="checkbox"/></td><td><div>${newFeatureName}</div>`;
             element += `<span class="xs" i18n="feature${featureName}"></span></td>`;
             element += `<td><span class="sm-min" i18n="feature${featureName}"></span>`;
-            element += `${feature_tip_html}</td></tr>`;
+            if (feature.haveTip) {
+                element += feature_tip_html;
+            }
+            element += '</td></tr>';
 
             const newElement = $(element);
 

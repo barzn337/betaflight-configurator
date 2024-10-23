@@ -1,9 +1,11 @@
+import { EventBus } from "../components/eventBus";
+
 /**
  * Gets one or more items from localStorage
  * @param {string | string[]} key string or array of strings
  * @returns {object}
  */
-export function get(key) {
+export function get(key, defaultValue = null) {
   let result = {};
   if (Array.isArray(key)) {
     key.forEach(function (element) {
@@ -24,6 +26,12 @@ export function get(key) {
     }
   }
 
+  // if default value is set and key is not found in localStorage, set default value
+  if (!Object.keys(result).length && defaultValue !== null) {
+    console.log('setting default value for', key, defaultValue);
+    result[key] = defaultValue;
+  }
+
   return result;
 }
 
@@ -37,6 +45,7 @@ export function set(input) {
     tmpObj[element] = input[element];
     try {
       localStorage.setItem(element, JSON.stringify(tmpObj));
+      EventBus.$emit('config-storage:set', element);
     } catch (e) {
       console.error(e);
     }

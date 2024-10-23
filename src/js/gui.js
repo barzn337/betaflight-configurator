@@ -2,7 +2,7 @@ import { get as getConfig } from './ConfigStorage';
 import MSP from './msp';
 import Switchery from 'switchery-latest';
 import jBox from 'jbox';
-import { checkChromeRuntimeError } from './utils/common';
+import $ from 'jquery';
 
 const TABS = {};
 
@@ -14,7 +14,6 @@ const GUI_MODES = {
 
 class GuiControl {
     constructor() {
-        this.auto_connect = false;
         this.connecting_to = false;
         this.connected_to = false;
         this.connect_lock = false;
@@ -27,14 +26,13 @@ class GuiControl {
 
         this.defaultAllowedTabsWhenDisconnected = [
             'landing',
-            'changelog',
             'firmware_flasher',
             'privacy_policy',
             'options',
             'help',
         ];
 
-        this.defaultAllowedTabsCloudBuild = [
+        this.defaultAllowedTabs = [
             'setup',
             'failsafe',
             'power',
@@ -51,6 +49,7 @@ class GuiControl {
             'ports',
             'receiver',
             'sensors',
+            'vtx',
         ];
 
         this.defaultCloudBuildTabOptions = [
@@ -59,10 +58,9 @@ class GuiControl {
             'osd',
             'servos',
             'transponder',
-            'vtx',
         ];
 
-        this.defaultAllowedFCTabsWhenConnected = [ ...this.defaultAllowedTabsCloudBuild, ...this.defaultCloudBuildTabOptions];
+        this.defaultAllowedFCTabsWhenConnected = [ ...this.defaultAllowedTabs, ...this.defaultCloudBuildTabOptions];
 
         this.allowedTabs = this.defaultAllowedTabsWhenDisconnected;
 
@@ -70,17 +68,7 @@ class GuiControl {
         this.operating_system = GUI_checkOperatingSystem();
 
         // Check the method of execution
-        this.nwGui = null;
-        try {
-            this.nwGui = require('nw.gui');
-            this.Mode = GUI_MODES.NWJS;
-        } catch (ex) {
-            if (typeof cordovaApp !== 'undefined') {
-                this.Mode = GUI_MODES.Cordova;
-            } else {
-                this.Mode = GUI_MODES.Other;
-            }
-        }
+        this.nwGui = GUI_MODES.Other;
     }
     // Timer managing methods
     // name = string
@@ -268,7 +256,7 @@ class GuiControl {
     }
     switchery() {
 
-        const COLOR_ACCENT = 'var(--accent)';
+        const COLOR_ACCENT = 'var(--primary-500)';
         const COLOR_SWITCHERY_SECOND = 'var(--switcherysecond)';
 
         $('.togglesmall').each(function (index, elem) {
@@ -310,13 +298,14 @@ class GuiControl {
 
         this.switchery();
 
-        const documentationButton = $('div#content #button-documentation');
         const tRex = GUI.active_tab.replaceAll('_', '-').toLowerCase();
 
-        documentationButton.html("Wiki").attr("href", `https://betaflight.com/docs/wiki/configurator/${tRex}-tab`);
+        $('div#content #button-documentation')
+        .html(i18n.getMessage('betaflightSupportButton'))
+        .attr("href", `https://betaflight.com/docs/wiki/configurator/${tRex}-tab`);
 
         // loading tooltip
-        jQuery(function () {
+        $(function () {
 
             new jBox('Tooltip', {
                 attach: '.cf_tip',
@@ -354,15 +343,9 @@ class GuiControl {
     }
     selectDefaultTabWhenConnected() {
         const result = getConfig(['rememberLastTab', 'lastTab']);
-        const tab = result.rememberLastTab && result.lastTab ? result.lastTab : 'tab_setup';
+        const tab = result.rememberLastTab && result.lastTab && this.allowedTabs.includes(result.lastTab.substring(4)) ? result.lastTab : 'tab_setup';
 
         $(`#tabs ul.mode-connected .${tab} a`).trigger('click');
-    }
-    isNWJS() {
-        return this.Mode === GUI_MODES.NWJS;
-    }
-    isCordova() {
-        return this.Mode === GUI_MODES.Cordova;
     }
     isOther() {
         return this.Mode === GUI_MODES.Other;
@@ -439,74 +422,27 @@ class GuiControl {
             dialog[0].showModal();
         });
     }
-    saveToTextFileDialog(textToSave, suggestedFileName, extension) {
-        return new Promise((resolve, reject) => {
-            const accepts = [{ description: `${extension.toUpperCase()} files`, extensions: [extension] }];
+    showInteractiveDialog(interactiveDialogSettings) {
+        // interactiveDialogSettings:
+        // title, text, buttonCloseText
+        return new Promise(resolve => {
+            const dialog = $(".dialogInteractive");
+            const title = dialog.find(".dialogInteractiveTitle");
+            const content = dialog.find(".dialogInteractiveContent");
+            const buttonClose = dialog.find(".dialogInteractive-closeButton");
 
-            chrome.fileSystem.chooseEntry(
-                {
-                    type: 'saveFile',
-                    suggestedName: suggestedFileName,
-                    accepts: accepts,
-                },
-                entry => this._saveToTextFileDialogFileSelected(entry, textToSave, resolve, reject),
-            );
-        });
-    }
-    _saveToTextFileDialogFileSelected(entry, textToSave, resolve, reject) {
-        checkChromeRuntimeError();
+            title.html(interactiveDialogSettings.title);
+            content.html(interactiveDialogSettings.text);
+            buttonClose.html(interactiveDialogSettings.buttonCloseText);
 
-        if (!entry) {
-            console.log('No file selected for saving');
-            resolve(false);
-            return;
-        }
+            buttonClose.off("click");
 
-        entry.createWriter(writer => {
-            writer.onerror = () => {
-                reject();
-                console.error('Failed to write file');
-            };
-
-            writer.onwriteend = () => {
-                if (textToSave.length > 0 && writer.length === 0) {
-                    writer.write(new Blob([textToSave], { type: 'text/plain' }));
-                } else {
-                    resolve(true);
-                    console.log('File write complete');
-                }
-            };
-
-            writer.truncate(0);
-        },
-            () => {
-                reject();
-                console.error('Failed to get file writer');
+            buttonClose.on("click", () => {
+                dialog[0].close();
+                resolve();
             });
-    }
-    readTextFileDialog(extension) {
-        const accepts = [{ description: `${extension.toUpperCase()} files`, extensions: [extension] }];
 
-        return new Promise((resolve, reject) => {
-            chrome.fileSystem.chooseEntry({ type: 'openFile', accepts: accepts }, function (entry) {
-                checkChromeRuntimeError();
-
-                if (!entry) {
-                    console.log('No file selected for loading');
-                    resolve(false);
-                    return;
-                }
-
-                entry.file((file) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result);
-                    reader.onerror = () => {
-                        console.error(reader.error);
-                        reject();
-                    };
-                    reader.readAsText(file);
-                });
-            });
+            dialog[0].showModal();
         });
     }
     escapeHtml(unsafe) {
@@ -521,6 +457,41 @@ class GuiControl {
         element.find('a').each(function () {
             $(this).attr('target', '_blank');
         });
+    }
+    showCliPanel() {
+        function set_cli_response(response) {
+            const eol = '\n';
+            let output = `${eol}`;
+            for (const line of response) {
+                output += `${line}${eol}`;
+            }
+            // gui_log(output.split(eol).join('<br>'));
+            $("#cli-command").val('');
+            $('#cli-response').text(output);
+        }
+
+        // cli-command button hook
+        $('input#cli-command').change(function () {
+            const _self = $(this);
+            const command = _self.val();
+            if (!command) {
+                return;
+            }
+            MSP.send_cli_command(command, function (response) {
+                set_cli_response(response);
+            });
+        });
+
+        const cliPanelDialog = {
+            title : i18n.getMessage("cliPanelTitle"),
+            buttonCloseText: i18n.getMessage("Close"),
+        };
+
+        // clear any text leftovers from previous session
+        $('#cli-command').val('');
+        $('#cli-response').text('');
+
+        this.showInteractiveDialog(cliPanelDialog);
     }
 }
 

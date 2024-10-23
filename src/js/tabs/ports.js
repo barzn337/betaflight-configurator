@@ -2,13 +2,12 @@ import semver from 'semver';
 import { i18n } from "../localization";
 import GUI, { TABS } from '../gui';
 import { tracking } from "../Analytics";
-import { reinitializeConnection } from '../serial_backend';
 import { mspHelper } from '../msp/MSPHelper';
 import FC from '../fc';
 import MSP from '../msp';
 import MSPCodes from '../msp/MSPCodes';
-import { API_VERSION_1_42, API_VERSION_1_43, API_VERSION_1_45 } from '../data_storage';
-import BOARD from '../boards';
+import { API_VERSION_1_45 } from '../data_storage';
+import $ from 'jquery';
 
 const ports = {
     analyticsChanges: {},
@@ -16,8 +15,6 @@ const ports = {
 
 ports.initialize = function (callback) {
     const self = this;
-
-    let board_definition = {};
 
     const functionRules = [
         { name: 'MSP',                  groups: ['configuration', 'msp'], maxPorts: 2 },
@@ -35,11 +32,8 @@ ports.initialize = function (callback) {
         { name: 'TELEMETRY_IBUS',       groups: ['telemetry'], maxPorts: 1 },
         { name: 'RUNCAM_DEVICE_CONTROL', groups: ['peripherals'], maxPorts: 1 },
         { name: 'LIDAR_TF',             groups: ['peripherals'], maxPorts: 1 },
+        { name: 'FRSKY_OSD',            groups: ['peripherals'], maxPorts: 1 },
     ];
-
-    if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_43)) {
-        functionRules.push({ name: 'FRSKY_OSD', groups: ['peripherals'], maxPorts: 1 });
-    }
 
     if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_45)) {
         functionRules.push({ name: 'VTX_MSP', groups: ['peripherals'], sharableWith: ['msp'], maxPorts: 1 });
@@ -99,22 +93,14 @@ ports.initialize = function (callback) {
     load_configuration_from_fc();
 
     function load_configuration_from_fc() {
-        let promise;
-        if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_42)) {
-            promise = MSP.promise(MSPCodes.MSP_VTX_CONFIG);
-        } else {
-            promise = Promise.resolve();
-        }
-
-        promise.then(function() {
+        MSP
+        .promise(MSPCodes.MSP_VTX_CONFIG)
+        .then(function() {
             mspHelper.loadSerialConfig(on_configuration_loaded_handler);
         });
 
         function on_configuration_loaded_handler() {
             $('#content').load("./tabs/ports.html", on_tab_loaded_handler);
-
-            board_definition = BOARD.find_board_definition(FC.CONFIG.boardIdentifier);
-            console.log('Using board definition', board_definition);
         }
     }
 
@@ -284,20 +270,14 @@ ports.initialize = function (callback) {
             portsElement.find('tbody').append(portConfigurationElement);
         }
 
-        let vtxTableNotConfigured = true;
-        if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_42)) {
-            vtxTableNotConfigured = FC.VTX_CONFIG.vtx_table_available &&
-                                        (FC.VTX_CONFIG.vtx_table_bands === 0 ||
-                                        FC.VTX_CONFIG.vtx_table_channels === 0 ||
-                                        FC.VTX_CONFIG.vtx_table_powerlevels === 0);
-        } else {
-            $('.vtxTableNotSet').hide();
-        }
+        const vtxTableNotConfigured = FC.VTX_CONFIG.vtx_table_available
+                                        && (FC.VTX_CONFIG.vtx_table_bands === 0
+                                        || FC.VTX_CONFIG.vtx_table_channels === 0
+                                        || FC.VTX_CONFIG.vtx_table_powerlevels === 0);
 
         const pheripheralsSelectElement = $('select[name="function-peripherals"]');
         pheripheralsSelectElement.on('change', function() {
-            let vtxControlSelected = undefined;
-            let mspControlSelected = undefined;
+            let vtxControlSelected, mspControlSelected;
 
             pheripheralsSelectElement.each(function(index, element) {
                 const value = $(element).val();
@@ -332,9 +312,7 @@ ports.initialize = function (callback) {
                 lastMspSelected = mspControlSelected;
             }
 
-            if (semver.gte(FC.CONFIG.apiVersion, API_VERSION_1_42)) {
-                $('.vtxTableNotSet').toggle(vtxControlSelected && vtxTableNotConfigured);
-            }
+            $('.vtxTableNotSet').toggle(vtxControlSelected && vtxTableNotConfigured);
         });
 
         pheripheralsSelectElement.trigger('change');
@@ -414,7 +392,6 @@ ports.initialize = function (callback) {
         let enableBlackbox = false;
         let enableEsc = false;
         let enableGps = false;
-        let enableVtx = false;
 
         for (const port of FC.SERIAL_CONFIG.ports) {
             const func = port.functions;
@@ -437,10 +414,6 @@ ports.initialize = function (callback) {
 
             if (func.includes('GPS')) {
                 enableGps = true;
-            }
-
-            if (func.includes('IRC_TRAMP') || func.includes('TBS_SMARTAUDIO')) {
-                enableVtx = true;
             }
         }
 
@@ -474,12 +447,6 @@ ports.initialize = function (callback) {
             featureConfig.disable('GPS');
         }
 
-        if (enableVtx) {
-            featureConfig.enable('VTX');
-        } else {
-            featureConfig.disable('VTX');
-        }
-
         mspHelper.sendSerialConfig(save_features);
 
         function save_features() {
@@ -487,11 +454,7 @@ ports.initialize = function (callback) {
         }
 
         function save_to_eeprom() {
-            mspHelper.writeConfiguration(function() {
-                GUI.tab_switch_cleanup(function() {
-                    MSP.send_message(MSPCodes.MSP_SET_REBOOT, false, false, reinitializeConnection);
-                });
-            });
+            mspHelper.writeConfiguration(true);
         }
     }
 };
